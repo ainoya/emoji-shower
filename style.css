@@ -23,3 +23,29 @@ body {
     radial-gradient(circle at 85% 25%, #ffffff80 0 10%, transparent 11%),
     linear-gradient(180deg, #e7fbff 0%, #fefaf0 100%);
 }
+
+#clear-mobile {
+  display: none;
+  position: fixed;
+  right: 12px;
+  bottom: max(12px, env(safe-area-inset-bottom));
+  z-index: 20;
+  border: 0;
+  border-radius: 999px;
+  padding: 10px 14px;
+  font: 700 14px/1.1 "Verdana", sans-serif;
+  color: #1f2937;
+  background: rgba(255, 255, 255, 0.88);
+  box-shadow: 0 6px 14px rgba(0, 0, 0, 0.16);
+  -webkit-tap-highlight-color: transparent;
+}
+
+#clear-mobile:active {
+  transform: scale(0.98);
+}
+
+@media (hover: none) and (pointer: coarse) {
+  #clear-mobile {
+    display: block;
+  }
+}

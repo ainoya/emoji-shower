@@ -1,9 +1,13 @@
 const canvas = document.getElementById("playground");
+const clearMobileButton = document.getElementById("clear-mobile");
 const ctx = canvas.getContext("2d");
 
 const GRAVITY = 0.22;
 const AIR_DRAG = 0.996;
-const BOUNCE = 0.16;
+const BOUNCE = 0.02;
+const COLLISION_DAMPING = 0.92;
+const SLEEP_SPEED_SQ = 0.045;
+const SLEEP_FRAMES = 6;
 
 const emojiByLetter = {
   a: ["🍎", "🐜", "🛩️", "🥑", "🅰️"],
@@ -46,10 +50,12 @@ const fallbackEmojis = [
   "🫧",
   "🍀",
 ];
+const tapEmojis = [...new Set([...Object.values(emojiByLetter).flat(), ...fallbackEmojis])];
 
 let particles = [];
 let width = 0;
 let height = 0;
+let hasInteracted = false;
 
 function resizeCanvas() {
   const dpr = Math.min(window.devicePixelRatio || 1, 2);
@@ -66,6 +72,9 @@ function randomFrom(list) {
 }
 
 function emojiForKey(key) {
+  if (key === "__tap__") {
+    return randomFrom(tapEmojis);
+  }
   const lower = key.toLowerCase();
   if (/^[a-z]$/.test(lower)) {
     return randomFrom(emojiByLetter[lower]);
@@ -76,12 +85,18 @@ function emojiForKey(key) {
   return randomFrom(fallbackEmojis);
 }
 
-function spawnEmoji(key) {
+function spawnEmoji(key, options = {}) {
   const emoji = emojiForKey(key);
   const size = 44 + Math.random() * 64;
   const radius = size * 0.43;
-  const x = radius + Math.random() * Math.max(1, width - radius * 2);
-  const y = -radius - Math.random() * 60;
+  const x =
+    typeof options.x === "number"
+      ? Math.min(width - radius, Math.max(radius, options.x))
+      : radius + Math.random() * Math.max(1, width - radius * 2);
+  const y =
+    typeof options.y === "number"
+      ? Math.min(height - radius, Math.max(radius, options.y))
+      : -radius - Math.random() * 60;
 
   particles.push({
     emoji,
@@ -91,7 +106,8 @@ function spawnEmoji(key) {
     vy: Math.random() * 0.3,
     radius,
     size,
-    settled: false,
+    asleep: false,
+    sleepFrames: 0,
   });
 }
 
@@ -109,15 +125,51 @@ function solveCollision(a, b) {
   const nx = dx / dist;
   const ny = dy / dist;
   const overlap = minDist - dist;
+  const correction = overlap * 0.75;
 
-  a.x -= nx * overlap * 0.5;
-  a.y -= ny * overlap * 0.5;
-  b.x += nx * overlap * 0.5;
-  b.y += ny * overlap * 0.5;
+  if (a.asleep && b.asleep) {
+    return;
+  }
+  if (a.asleep) {
+    b.x += nx * correction;
+    b.y += ny * correction;
+  } else if (b.asleep) {
+    a.x -= nx * correction;
+    a.y -= ny * correction;
+  } else {
+    a.x -= nx * correction * 0.5;
+    a.y -= ny * correction * 0.5;
+    b.x += nx * correction * 0.5;
+    b.y += ny * correction * 0.5;
+  }
 
   const rvx = b.vx - a.vx;
   const rvy = b.vy - a.vy;
   const sepSpeed = rvx * nx + rvy * ny;
+
+  if (a.asleep) {
+    const speed = b.vx * nx + b.vy * ny;
+    if (speed >= 0) {
+      return;
+    }
+    b.vx -= speed * nx;
+    b.vy -= speed * ny;
+    b.vx *= COLLISION_DAMPING;
+    b.vy *= COLLISION_DAMPING;
+    return;
+  }
+
+  if (b.asleep) {
+    const speed = a.vx * nx + a.vy * ny;
+    if (speed <= 0) {
+      return;
+    }
+    a.vx -= speed * nx;
+    a.vy -= speed * ny;
+    a.vx *= COLLISION_DAMPING;
+    a.vy *= COLLISION_DAMPING;
+    return;
+  }
 
   if (sepSpeed > 0) {
     return;
@@ -128,10 +180,18 @@ function solveCollision(a, b) {
   a.vy -= impulse * ny;
   b.vx += impulse * nx;
   b.vy += impulse * ny;
+
+  a.vx *= COLLISION_DAMPING;
+  a.vy *= COLLISION_DAMPING;
+  b.vx *= COLLISION_DAMPING;
+  b.vy *= COLLISION_DAMPING;
 }
 
 function updateParticles() {
   for (const p of particles) {
+    if (p.asleep) {
+      continue;
+    }
     p.vy += GRAVITY;
     p.vx *= AIR_DRAG;
     p.vy *= AIR_DRAG;
@@ -148,8 +208,8 @@ function updateParticles() {
 
     if (p.y > height - p.radius) {
       p.y = height - p.radius;
-      p.vy *= -0.22;
-      p.vx *= 0.9;
+      p.vy *= -0.08;
+      p.vx *= 0.86;
     }
   }
 
@@ -160,8 +220,19 @@ function updateParticles() {
   }
 
   for (const p of particles) {
-    p.settled = Math.abs(p.vx) < 0.04 && Math.abs(p.vy) < 0.08 && p.y > height * 0.2;
-    if (p.settled) {
+    if (p.asleep) {
+      continue;
+    }
+    const speedSq = p.vx * p.vx + p.vy * p.vy;
+    if (speedSq < SLEEP_SPEED_SQ && p.y > height * 0.25) {
+      p.sleepFrames += 1;
+    } else {
+      p.sleepFrames = 0;
+    }
+    if (p.sleepFrames >= SLEEP_FRAMES) {
+      p.asleep = true;
+      p.x = Math.round(p.x * 2) / 2;
+      p.y = Math.round(p.y * 2) / 2;
       p.vx = 0;
       p.vy = 0;
     }
@@ -190,21 +261,39 @@ function drawParticles() {
   }
 }
 
+function drawHint() {
+  if (hasInteracted) {
+    return;
+  }
+  ctx.fillStyle = "rgba(0, 0, 0, 0.6)";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.font = '700 32px "Verdana", sans-serif';
+  ctx.fillText("press any key", width / 2, height / 2);
+}
+
 function tick() {
   drawBackground();
   updateParticles();
   drawParticles();
+  drawHint();
   requestAnimationFrame(tick);
+}
+
+function clearAll() {
+  particles = [];
+  hasInteracted = false;
 }
 
 window.addEventListener("resize", resizeCanvas);
 
 window.addEventListener("keydown", (event) => {
   if (event.key === "Escape") {
-    particles = [];
+    clearAll();
     return;
   }
 
+  hasInteracted = true;
   if (event.repeat) {
     for (let i = 0; i < 2; i += 1) {
       spawnEmoji(event.key);
@@ -213,6 +302,45 @@ window.addEventListener("keydown", (event) => {
   }
   spawnEmoji(event.key);
 });
+
+function spawnAtPoint(x, y) {
+  hasInteracted = true;
+  spawnEmoji("__tap__", {
+    x,
+    y,
+  });
+}
+
+if ("PointerEvent" in window) {
+  window.addEventListener("pointerdown", (event) => {
+    spawnAtPoint(event.clientX, event.clientY);
+  });
+} else {
+  window.addEventListener(
+    "touchstart",
+    (event) => {
+      const touch = event.changedTouches[0];
+      if (!touch) {
+        return;
+      }
+      spawnAtPoint(touch.clientX, touch.clientY);
+    },
+    { passive: true },
+  );
+}
+
+if (clearMobileButton) {
+  clearMobileButton.addEventListener("pointerdown", (event) => {
+    event.stopPropagation();
+  });
+  clearMobileButton.addEventListener("touchstart", (event) => {
+    event.stopPropagation();
+  });
+  clearMobileButton.addEventListener("click", (event) => {
+    event.stopPropagation();
+    clearAll();
+  });
+}
 
 resizeCanvas();
 tick();
